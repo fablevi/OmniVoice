@@ -473,6 +473,90 @@ via `Linear(W·diag(s), x/diag(s))`, then run the existing static QDQ
 on the smoothed graph. Multi-day project; the calibration capture and
 QDQ scripts in this branch are reusable scaffolding for it.
 
+### What we tried for int8 quality, part 2: SmoothQuant pre-pass
+
+Spoiler: didn't move the needle on this CPU / ORT combination. The
+diagnosis we wrote down in #1 above was right (Qwen3 hidden states
+have outlier channels — `llm.norm.weight` activations show a
+**89.5× max-channel/median ratio**, 5 groups exceed 10×, all 57
+exceed 3.5×). What was *wrong* was the assumption that fixing the
+activation distribution would unblock ORT's static int8 path. It
+didn't — the kernel-fallback issue (#2 above) is the dominant
+blocker, not activation outliers.
+
+**Implementation** (in this branch):
+
+- `scripts/smoothquant_calibrate.py` — scans the fp32 graph for the
+  57 LayerNorm → Linear groups (28× input_layernorm × {q,k,v},
+  28× post_attention_layernorm × {gate,up}, 1× final norm × audio_heads),
+  exposes each LN output as an extra graph output, runs the existing
+  `calibration/*.npz` corpus through ORT, and saves per-channel
+  `max(|act|)` to `calibration/activation_max.npz`. ~50 s on the
+  full 160-sample corpus.
+- `scripts/smoothquant_apply.py` — for each group computes
+  `s[j] = max(|x|, ε)^α / max(|W|, ε)^(1-α)` and rewrites
+  `gamma_new = gamma / s`, `W_new[j, k] = W[j, k] * s[j]` in place.
+  Saves to `onnx/omnivoice-step.smoothed.onnx` + sidecar. Includes
+  a built-in fp32 self-check that runs original vs smoothed and
+  asserts `max-abs-diff < 1e-3`. Self-check passed at
+  `max_abs=9.9e-5`, `argmax_disagree=0%` — the rewrite is
+  fp32-equivalent.
+
+**Sweep, all on the smoothed graph, parity-check seq_len=256, seed=0**
+(`audio_heads` excluded; α is the SmoothQuant migration strength,
+0 = no migration, 1 = all migration into weights):
+
+| Recipe | α | mean abs | argmax disagree | RTF (fox pangram) |
+|---|---:|---:|---:|---:|
+| Static QDQ baseline (un-smoothed) | — | 2.04 | 97-98% | 2.05 |
+| Static QDQ + SmoothQuant | 0.5 | 2.44 | 97.7% | 2.05 |
+| Static QDQ + SmoothQuant | 0.65 | 2.39 | 97.8% | — |
+| Static QDQ + SmoothQuant | 0.8 | 2.40 | 97.3% | — |
+| **Dynamic int8 baseline (un-smoothed, ship)** | — | **0.344** | **49%** | **0.65** |
+| Dynamic int8 + SmoothQuant | 0.5 | 0.405 | 51% | 0.62 |
+| Dynamic int8 + SmoothQuant | 0.65 | 0.415 | 52% | — |
+| Dynamic int8 + SmoothQuant | 0.8 | 0.453 | 54% | — |
+
+**Why it didn't help:**
+
+- **Static QDQ:** SmoothQuant fixes the per-tensor activation-scale
+  crush exactly as the textbook predicts — but the dominant cost was
+  never the scale crush, it was ORT MLAS falling back to fp32 GEMM
+  with extra Q/DQ round-trips on every smoothed-shape MatMul.
+  Activation distribution can't fix a kernel-coverage problem.
+  Smoothed-static stayed at ~97% disagreement and 2.05 RTF, identical
+  to un-smoothed static.
+- **Dynamic int8:** ORT's dynamic path computes per-tensor activation
+  scales **online** at each call, so it never suffered the static
+  per-tensor crush in the first place. Migrating activation magnitude
+  into weights just adds a per-channel scale step that the dynamic
+  quantizer then has to round through — net effect a ~2 percentage
+  point regression at every α tested.
+
+**Files left on disk:**
+
+- `onnx/omnivoice-step.smoothed.onnx` (+ `_data` sidecar) — fp32
+  smoothed graph at α=0.8 (last sweep value). fp32-equivalent to the
+  original; safe to delete.
+- `onnx/omnivoice-step.smoothed.int8.onnx` — static QDQ on the
+  smoothed graph. Quality regression vs un-smoothed static (which
+  was already non-shipping).
+- `onnx/omnivoice-step.smoothed.dyn.int8.onnx` — dynamic int8 on the
+  smoothed graph. Quality regression vs the dynamic ship default.
+- `calibration/activation_max.npz` — per-channel activation maxes
+  from the calibration corpus. Useful as data even if SmoothQuant
+  didn't help (e.g. for diagnosing which layers have the worst
+  outliers — layers 23-27 dominate).
+
+**Conclusion:** the SmoothQuant infrastructure is in place and
+correct (fp32 self-check passes), but it can't unblock ORT's static
+int8 kernel issue, and dynamic int8 doesn't need it. To make int8
+faster *and* higher-quality on this CPU we'd need either a
+different runtime (TensorRT-CPU, OpenVINO, oneDNN-direct) with real
+AVX-VNNI int8 GEMM kernels for these shapes, or a different
+quantization scheme entirely (W4A16 / GPTQ / AWQ on a runtime that
+supports it). SmoothQuant alone is a no-op here.
+
 ### Verdict
 
 **Speed hypothesis confirmed; quality recovery requires more work

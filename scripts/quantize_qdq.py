@@ -84,7 +84,9 @@ def make_reader(
 ):
     from onnxruntime.quantization import CalibrationDataReader
 
-    all_files = sorted(calib_dir.glob("*.npz"))
+    # Only consider per-step capture files. Skip aux artifacts that may
+    # share the directory (e.g. ``activation_max.npz`` from SmoothQuant).
+    all_files = sorted(calib_dir.glob("*_step*.npz"))
     if not all_files:
         raise RuntimeError(f"no calibration samples in {calib_dir}")
 
