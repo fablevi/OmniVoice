@@ -90,7 +90,8 @@ def make_session(onnx_path: Path, threads: int) -> ort.InferenceSession:
 
 
 def install_onnx_forward(
-    model: OmniVoice, sess: ort.InferenceSession, stats: StepStats
+    model: OmniVoice, sess: ort.InferenceSession, stats: StepStats,
+    capture_dir: Optional[Path] = None, capture_tag: Optional[str] = None,
 ) -> None:
     """Replace ``model.forward`` with an ONNX-backed equivalent.
 
@@ -98,10 +99,18 @@ def install_onnx_forward(
     ``omnivoice/models/omnivoice.py:1255``: keyword-only ``input_ids``,
     ``audio_mask``, ``attention_mask`` (no ``position_ids`` — we synthesise
     it from the seq dim).
+
+    If ``capture_dir`` is set, every ``sess.run`` input is dumped as
+    ``<capture_dir>/<capture_tag>_<step>.npz``. Use this with the fp32
+    session to collect calibration data for static QDQ quantisation.
     """
 
     expected_inputs = {i.name for i in sess.get_inputs()}
     needs_position_ids = "position_ids" in expected_inputs
+
+    capture_state = {"step": 0}
+    if capture_dir is not None:
+        capture_dir.mkdir(parents=True, exist_ok=True)
 
     def forward(
         self: OmniVoice,
@@ -132,6 +141,12 @@ def install_onnx_forward(
             else:
                 pos = position_ids
             feeds["position_ids"] = pos.detach().cpu().contiguous().numpy()
+
+        if capture_dir is not None:
+            tag = capture_tag or "sample"
+            step = capture_state["step"]
+            np.savez(capture_dir / f"{tag}_step{step:04d}.npz", **feeds)
+            capture_state["step"] = step + 1
 
         t0 = time.perf_counter()
         out = sess.run(["logits"], feeds)[0]  # [B, C, S, V] fp32

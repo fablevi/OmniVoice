@@ -31,3 +31,4 @@ examples/exp*
 /onnx/*.onnx
 /onnx/*.onnx_data
 /onnx/*.onnx.data
+/calibration/

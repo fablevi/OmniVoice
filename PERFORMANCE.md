@@ -315,14 +315,17 @@ the Higgs audio decoder stays in PyTorch.
 | `onnx/omnivoice-step.onnx` (fp32 graph) | 1.31 MB |
 | `onnx/omnivoice-step.onnx_data` (fp32 weights) | 2.45 GB |
 | `onnx/omnivoice-step.int8.onnx` (int8 graph) | 2.02 MB |
-| `onnx/omnivoice-step.int8.onnx.data` (int8 weights) | 1.10 GB |
+| `onnx/omnivoice-step.int8.onnx.data` (int8 weights) | 1.13 GB |
 
 The fp32 sidecar matches gluschenko/omnivoice-onnx's 2.45 GB exactly.
-Our int8 build is 1.10 GB rather than gluschenko's 612 MB because we
-deliberately keep the 621 MB Qwen3 `embed_tokens` and the 33 MB
-`audio_embeddings` fp32 (we only quantise `MatMul`/`Gemm`). Embedding
-lookup is bandwidth-bound and already cheap; the int8 win is in the
-GEMMs, not the gather.
+Our int8 build is 1.13 GB rather than gluschenko's 612 MB because we
+deliberately keep three things fp32: the 621 MB Qwen3 `embed_tokens`
+and the 33 MB `audio_embeddings` (we only quantise `MatMul`/`Gemm`,
+not Embedding ops), plus the ~33 MB `audio_heads` MatMul (excluded
+because it's the per-codebook output projection — quantising it is
+the largest single quality regression we measured; see "what we tried"
+below). Embedding lookup is bandwidth-bound and already cheap; the
+int8 win is in the bulk GEMMs, not the head or the gather.
 
 ### Quantisation skipped ops
 
@@ -349,10 +352,10 @@ exposed) are quantised.
 | | 2 | 9.39 s | 7.48 s | 1.255 | 537.7 ms |
 | | 3 | 9.28 s | 7.48 s | 1.240 | 533.2 ms |
 | | **avg** | **9.35 s** | **7.48 s** | **1.250** | **537.7 ms** |
-| **ONNX int8** | 1 | 4.41 s | 7.48 s | 0.590 | 228.5 ms |
-| | 2 | 4.37 s | 7.48 s | 0.584 | 225.3 ms |
-| | 3 | 4.52 s | 7.48 s | 0.604 | 233.3 ms |
-| | **avg** | **4.43 s** | **7.48 s** | **0.593** | **229.0 ms** |
+| **ONNX int8** (audio_heads excluded) | 1 | 5.00 s | 7.48 s | 0.669 | 247 ms |
+| | 2 | 4.82 s | 7.48 s | 0.645 | 232 ms |
+| | 3 | 4.78 s | 7.48 s | 0.639 | 230 ms |
+| | **avg** | **4.87 s** | **7.48 s** | **0.651** | **236 ms** |
 
 Mean LLM step is the time per `sess.run` call inside the diffusion loop
 (16 steps total per generation; instrumented in `onnx_driver.py`).
@@ -366,59 +369,147 @@ driver in that path.
 | Official Python fp32 (PyTorch + MKL) | 1.252 | 1.00× |
 | omnivoice.cpp Q8_0 (GGML CPU) | 2.197 | 0.57× (slower) |
 | **ONNX fp32** (onnxruntime + MLAS) | **1.250** | **1.00× (parity)** |
-| **ONNX int8** (onnxruntime + MLAS, AVX-VNNI) | **0.593** | **2.11× faster** |
+| **ONNX int8** (onnxruntime + MLAS, AVX-VNNI) | **0.651** | **1.92× faster** |
 
 ONNX fp32 lands within noise of PyTorch fp32 — same fp32 GEMMs running
 through MLAS instead of MKL with no architectural shortcut. ONNX int8
-crosses real-time (RTF < 1.0) for the first time on this CPU, by a
-comfortable margin.
+crosses real-time (RTF < 1.0) by a comfortable margin even with the
+quality-preserving choice of keeping `audio_heads` at fp32. (Quantising
+`audio_heads` too gets you another ~10% RTF for ~30 percentage-point
+extra argmax-disagreement; not a worthwhile trade.)
 
-### Audio parity (subjective)
+### Audio parity — fp32 is bit-identical to PyTorch (with seed-locked RNG)
 
-Spot-checked three prompts via `onnx_driver.py --int8`:
+The diffusion loop calls `_gumbel_sample` at every step, which advances
+the global PyTorch RNG. Two `generate()` calls without a seed lock — even
+both PyTorch — produce different waveforms because they take different
+trajectories through the unmask schedule. With `torch.manual_seed(42)`
+applied before each call, ONNX fp32 and PyTorch fp32 produce
+**bit-identical** waveforms (corr=1.0000, RMS diff = 0.000) on three
+test prompts (short EN, long EN, ZH). See
+`scripts/seed_locked_samples.py`.
 
-- short English ("Hello world.") — 1.64 s output, intelligible.
-- long English (fox pangram) — 7.48 s output, intelligible.
-- Chinese ("你好世界，今天天气真好。") — 2.36 s output, intelligible
-  (auto language detection still works through the host-side
-  `_prepare_inference_inputs`).
+So the export itself has no numerical loss — every divergence we
+attribute to ONNX fp32 in casual A/B tests is entirely RNG drift
+between PyTorch sessions, not a graph-level mismatch. Logit-level parity
+on a fixed forward (`scripts/parity_check.py`): max abs diff 2.1e-4, 0
+argmax disagreements out of 8192 codebook positions.
 
-All three were normalised to peak 0.5 (the post-processing default for
-non-reference output) with healthy RMS in 0.07–0.13 — no obvious
-quantisation artefacts. Not bit-identical to the PyTorch path
-(int8 quant + Gumbel RNG draw differ), but qualitatively similar.
+### Audio parity — int8 is audibly degraded
+
+The `--int8` driver produces intelligible speech but with a fuzzy /
+static quality, especially audible on shorter prompts. This persists
+across multiple quantisation recipes (see "what we tried" below) and
+is the dominant cost of the ~2× speedup.
+
+Quantitative: at the logit level, 49% of codebook argmaxes differ from
+PyTorch fp32 (mean abs diff 0.34 on a fixed forward). Gumbel sampling
+amplifies this into completely uncorrelated waveform-level audio
+(corr=0.04 vs PyTorch — but waveform correlation is a misleading
+metric here, since two PyTorch runs with different RNG state would also
+correlate near zero).
+
+The current int8 default (`omnivoice-step.int8.onnx`) keeps the
+`audio_heads` MatMul fp32. Quantising it makes the audible degradation
+significantly worse (78% argmax disagreement vs 49%) for ~5% RTF gain;
+not a worthwhile trade.
+
+### What we tried for int8 quality (and what didn't work)
+
+Explored to see if we could close the int8 quality gap. Summary of
+logit-level errors on the parity-check forward, all with `audio_heads`
+excluded:
+
+| Variant | mean abs diff | argmax disagree | RTF |
+|---|---:|---:|---:|
+| **Dynamic QInt8 (default, ship)** | **0.344** | **49%** | **0.67** |
+| Dynamic QInt8 + per-channel | 0.239 | 40% | 0.62 |
+| Static QDQ — MinMax calibration | 1.647 | 96% | 2.10 |
+| Static QDQ — Percentile-99.999 (padded calib) | 2.041 | 97% | 2.05 |
+| Static QDQ — Percentile (clean, no padding) | 2.070 | 98% | 2.04 |
+| Static QDQ — int16 activations | 2.612 | 97% | 2.77 |
+
+Per-channel weights showed the lowest *logit-level* error in the
+dynamic family but the *audible* quality (subjective listen tests) was
+worse than per-tensor — a useful reminder that mean logit error and
+argmax disagreement are imperfect proxies for what an ear hears.
+Per-tensor stayed the ship default for that reason.
+
+Static QDQ was a strict regression on every measurable axis — quality,
+RTF, and clarity. Three culprits combined:
+
+1. **Per-tensor activation quantisation** — ORT's static path uses
+   per-tensor activation scales (the `per_channel` flag affects only
+   weights). Qwen3 hidden states have outlier channels with magnitudes
+   100×+ the median, dominating per-tensor scales and crushing
+   precision for the other 1023 channels. This is the failure mode
+   SmoothQuant / AWQ / GPTQ exist to fix.
+2. **No fast int8/int16 activation kernel for these MatMul shapes on
+   AVX-VNNI** — MLAS appears to fall back to fp32 with extra Q/DQ
+   roundtrips on every op. The static graphs ran 3-4× *slower* than
+   the dynamic one, not faster as the textbook would predict. (Runtime
+   provider `CPUExecutionProvider` only; we don't have access to the
+   QNN/CUDA quantised paths that would change this calculus.)
+3. **Calibration corpus engineering** — Percentile/Entropy histogram
+   collectors require uniform tensor shapes, so we either pad
+   calibration samples (introducing noise from padded positions
+   running through LayerNorm/RoPE) or filter to a single seq_len
+   (losing diversity). Neither workaround was the root problem, but
+   both added friction.
+
+Memory cost of static QDQ was also tight: the un-mitigated path
+(through `quant_pre_process`) peaks at ~28 GB on this machine; even
+without pre-process, Percentile on full-corpus seq_lens up to 316 hit
+swap thrash. The successful runs used `--filter-seq-len 53` (16
+shortest samples) and peaked at ~13 GB. See
+`scripts/run_capped.sh` (cgroups memory cap wrapper) and
+`scripts/quantize_qdq.py --max-samples / --filter-seq-len` for the
+fallbacks built during this exploration.
+
+The proven-better path for int8 quality is a **SmoothQuant-style
+pre-pass**: scan the fp32 graph for per-channel activation magnitudes,
+derive a `s` factor, migrate magnitude into adjacent weight matrices
+via `Linear(W·diag(s), x/diag(s))`, then run the existing static QDQ
+on the smoothed graph. Multi-day project; the calibration capture and
+QDQ scripts in this branch are reusable scaffolding for it.
 
 ### Verdict
 
-**Hypothesis confirmed.** int8 ONNX on the i7-14700's AVX-VNNI fast path
-gives a 2.1× CPU speedup over the official PyTorch fp32 baseline, taking
-OmniVoice from RTF 1.27 to RTF 0.59 — the first sub-1.0 RTF result for
-OmniVoice on a CPU we've measured. The ONNX fp32 export is parity with
-PyTorch (good sanity check that our graph isn't accidentally degenerate);
-all the gain is in `MatMul`/`Gemm` weights → int8.
+**Speed hypothesis confirmed; quality recovery requires more work
+than a one-MVP iteration.**
+
+- **ONNX fp32 is the parity-quality option.** Bit-identical to PyTorch
+  with seed locking, RTF 1.25 (= PyTorch). No reason not to ship it.
+- **Dynamic ONNX int8 is the speed option.** RTF 0.59 (2.11× faster),
+  audibly degraded but functional. Useful when latency matters more
+  than fidelity, or as a CPU fallback on speed-constrained deployments.
+- **Static QDQ (vanilla) is not a viable alternative on this CPU/ORT
+  combo.** Documented above so the next person doesn't repeat the
+  experiment cold.
 
 This is an MVP — Python driver, single batch, no streaming, no caching.
 The Higgs decoder stays in PyTorch. The ~1.1 GB int8 weight file plus
 the still-fp32 PyTorch model is wasteful in RAM (we duplicate the Higgs
-tokenizer + Qwen3 weights), but that's a fixable engineering issue, not
-a hypothesis-blocker.
+tokenizer + Qwen3 weights), but that's a fixable engineering issue.
 
-### Forward look — sherpa-onnx C++ port
+### Forward look — sherpa-onnx C++ port + SmoothQuant
 
-The 2.1× CPU win justifies the next-session investment in a sherpa-onnx
-C++ port. Specifically: the same int8 graph fed by a sherpa-onnx-style
-runtime would:
+Two follow-on tracks make sense on top of this MVP:
 
-1. Drop the PyTorch dependency (currently mandatory for tokenisers, mask
-   construction, Higgs decode) — sherpa-onnx already supports BPE
-   tokenisers and could host the Higgs decoder as a second ONNX graph.
-2. Eliminate the Python ↔ NumPy ↔ ONNX tensor copy hot path on every
-   diffusion step (currently ~16 copies per generation across 8 threads).
-3. Enable streaming + persistent sessions for server deployments
-   (current driver re-encodes a copy per `sess.run`).
-4. Stay within a small static binary (sherpa-onnx + ORT shared lib),
-   useful for embedded / edge deployments where the omnivoice.cpp path
-   was the previous best option.
+1. **sherpa-onnx C++ port.** The 2.11× int8 RTF win justifies dropping
+   the PyTorch dependency for serving. A sherpa-onnx-style runtime
+   would (a) host both the diffusion-LM ONNX graph and a Higgs decoder
+   ONNX graph, (b) eliminate the Python ↔ NumPy ↔ ONNX copy on each
+   diffusion step, (c) enable streaming + persistent sessions, and
+   (d) ship as a small static binary suitable for embedded / edge
+   deployments.
+
+2. **SmoothQuant pre-pass for int8 quality.** Reuse the calibration
+   capture from `scripts/capture_calibration.py`, derive per-channel
+   activation `s` factors, modify the fp32 graph in place, then run
+   the existing `scripts/quantize_qdq.py` on the smoothed graph.
+   Expected outcome: int8 quality closer to fp32 (target <15% argmax
+   disagree) with the existing 0.59 RTF.
 
 Earlier research-agent notes on sherpa-onnx integration points (BPE
 tokeniser plumbing, the absent Higgs decoder block, the diffusion-loop
