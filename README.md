@@ -217,13 +217,14 @@ audio = model.generate(text="He plays the [B EY1 S] guitar while catching a [B A
 
 ## Command-Line Tools
 
-Three CLI entry points are provided. The CLI tools support all features available in the Python API (voice cloning, voice design, auto voice, generation parameters, etc.) — all controlled via command-line arguments.
+Four CLI entry points are provided. The CLI tools support all features available in the Python API (voice cloning, voice design, auto voice, generation parameters, etc.) — all controlled via command-line arguments.
 
 | Command | Description | Source |
 |---|---|---|
 | `omnivoice-demo` | Interactive Gradio web demo | [omnivoice/cli/demo.py](omnivoice/cli/demo.py) |
 | `omnivoice-infer` | Single-item inference | [omnivoice/cli/infer.py](omnivoice/cli/infer.py) |
 | `omnivoice-infer-batch` | Batch inference across multiple GPUs | [omnivoice/cli/infer_batch.py](omnivoice/cli/infer_batch.py) |
+| `omnivoice-infer-openvino` | CPU-optimized inference via OpenVINO int8 (see [docs/openvino.md](docs/openvino.md)) | [omnivoice/cli/infer_openvino.py](omnivoice/cli/infer_openvino.py) |
 
 ### Demo
 
@@ -276,6 +277,10 @@ The test list is a JSONL file where each line is a JSON object:
 Only `id` and `text` are mandatory fields. `ref_audio` and `ref_text` are used in voice cloning mode. `instruct` is used in voice design mode. If no reference audio or instruct are provided, the model will generate text in a random voice.
 
 `language_id`, `duration`, and `speed` are optional. `duration` (in seconds) fixes the output length; `speed` controls the speaking rate. If `duration` and `speed` are both provided, `speed` will be ignored.
+
+### CPU Inference (OpenVINO)
+
+For CPU-only deployments, `omnivoice-infer-openvino` runs the diffusion-LM step through an int8 OpenVINO IR (oneDNN AVX-VNNI kernels), typically halving latency on AVX-VNNI Intel CPUs versus the default PyTorch backend. Install with `pip install omnivoice[openvino]` (or `uv sync --extra openvino`) and follow the export → calibrate → quantize → run pipeline in [docs/openvino.md](docs/openvino.md).
 
 ---
 

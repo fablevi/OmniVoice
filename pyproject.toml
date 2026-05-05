@@ -54,9 +54,19 @@ eval = [
     "unidecode",            # Unicode normalization
 ]
 
+# CPU-optimized inference path: ONNX export + OpenVINO int8 quantization
+# and inference. Pulls in onnx for export, openvino for runtime, nncf for
+# post-training int8 quantization.
+openvino = [
+    "onnx>=1.16",
+    "openvino>=2024.4",
+    "nncf>=2.13",
+]
+
 [project.scripts]
 omnivoice-infer = "omnivoice.cli.infer:main"
 omnivoice-infer-batch = "omnivoice.cli.infer_batch:main"
+omnivoice-infer-openvino = "omnivoice.cli.infer_openvino:main"
 omnivoice-demo = "omnivoice.cli.demo:main"
 
 [project.urls]
