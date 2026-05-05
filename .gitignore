@@ -32,3 +32,10 @@ examples/exp*
 /onnx/*.onnx_data
 /onnx/*.onnx.data
 /calibration/
+/calibration_combined/
+/calibration_v2/
+/gguf/
+/openvino_ir/
+/samples/
+/perf-runs/
+rust_drivers/**/target/

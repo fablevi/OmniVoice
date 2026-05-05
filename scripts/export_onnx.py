@@ -121,6 +121,10 @@ def main() -> int:
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--seq-len", type=int, default=512)
     p.add_argument("--opset", type=int, default=17)
+    p.add_argument("--attn", default="sdpa", choices=["sdpa", "eager"],
+                   help="attention implementation to trace through "
+                   "(eager exposes the Q*K^T pattern to ORT's graph optimizer; "
+                   "sdpa is faster to trace but hides attention from the fuser)")
     p.add_argument("--skip-check", action="store_true",
                    help="skip onnx.checker.check_model (slow on multi-GB graphs)")
     args = p.parse_args()
@@ -128,9 +132,9 @@ def main() -> int:
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    log.info("Loading %s on cpu (attn_implementation=sdpa) ...", args.model)
+    log.info("Loading %s on cpu (attn_implementation=%s) ...", args.model, args.attn)
     t0 = time.time()
-    model = OmniVoice.from_pretrained(args.model, attn_implementation="sdpa")
+    model = OmniVoice.from_pretrained(args.model, attn_implementation=args.attn)
     model.to("cpu").eval()
     log.info("Loaded in %.1fs", time.time() - t0)
 
