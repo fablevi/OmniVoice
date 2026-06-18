@@ -28,3 +28,7 @@ examples/exp*
 .claude/
 *.wav
 *.jsonl
+/calibration
+/venv
+/onnx
+/openvino_ir

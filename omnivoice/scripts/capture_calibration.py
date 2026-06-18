@@ -51,30 +51,33 @@ from omnivoice.models.omnivoice import OmniVoiceModelOutput
 # 10 prompts spanning short/long, EN/ZH, and varying voice-design instructs.
 # 10 prompts x 16 diffusion steps = 160 calibration samples per run.
 CORPUS = [
-    ("short_en_alloy",   "Hello world.",
-                          "Male, Young Adult, Low Pitch"),
-    ("short_en_fable",   "Good morning everyone.",
-                          "Female, Young Adult, High Pitch"),
-    ("short_en_onyx",    "Welcome to the show.",
-                          "Male, Elderly, Very Low Pitch"),
-    ("med_en_nova",      "The weather is nice today, isn't it?",
-                          "Female, Middle-aged, Moderate Pitch"),
-    ("med_en_echo",      "Please listen carefully to the following announcement.",
-                          "Male, Middle-aged, Moderate Pitch, British Accent"),
-    ("long_en_fox",      "The quick brown fox jumps over the lazy dog. "
-                         "Pack my box with five dozen liquor jugs. "
-                         "How vexingly quick daft zebras jump.",
-                          "Female, Middle-aged, Moderate Pitch"),
-    ("long_en_lincoln",  "Four score and seven years ago our fathers brought forth, "
-                         "on this continent, a new nation, conceived in liberty, "
-                         "and dedicated to the proposition that all men are created equal.",
-                          "Male, Elderly, Low Pitch"),
-    ("short_zh",         "你好世界，今天天气真好。",
-                          "Female, Young Adult, High Pitch"),
-    ("med_zh",           "欢迎收听今天的天气预报，明天将有小雨。",
-                          "Female, Middle-aged, Moderate Pitch"),
-    ("long_zh",          "在很久很久以前，有一个小村庄住着一位善良的老人，他每天都会去山上砍柴。",
-                          "Male, Middle-aged, Low Pitch"),
+    ("short_hu_1",   "Szia világ, üdvözöllek!",
+                     "Male, Young Adult, Low Pitch"),
+    ("short_hu_2",   "Jó reggelt kívánok mindenkinek.",
+                     "Female, Young Adult, High Pitch"),
+    ("short_hu_3",   "Köszönöm szépen a segítséget.",
+                     "Male, Elderly, Very Low Pitch"),
+    ("med_hu_1",     "Ma nagyon szép és napos időnk van, nem igaz?",
+                     "Female, Middle-aged, Moderate Pitch"),
+    ("med_hu_2",     "Kérjük, figyelmesen hallgassák meg a következő hirdetményt.",
+                     "Male, Middle-aged, Moderate Pitch"),
+    ("med_hu_3",     "A vonatok a kettes vágányról indulnak a menetrend szerint.",
+                     "Female, Young Adult, Moderate Pitch"),
+    ("long_hu_1",    "A gyors barna róka átugorja a lusta kutyát. "
+                     "Ez egy klasszikus példamondat a karakterek tesztelésére, "
+                     "amely most a magyar beszédet segíti.",
+                     "Female, Middle-aged, Moderate Pitch"),
+    ("long_hu_2",    "Egyszer volt, hol nem volt, hetedhét országon túl, "
+                     "volt egyszer egy szegény ember, aki elindult szerencsét próbálni "
+                     "a sötét erdőbe.",
+                     "Male, Elderly, Low Pitch"),
+    ("long_hu_3",    "A tudomány és a technológia fejlődése révén ma már "
+                     "közvetlenül a saját számítógépünkön, a videókártyát használva "
+                     "vagyunk képesek élethű emberi hangot generálni.",
+                     "Male, Middle-aged, Low Pitch"),
+    ("long_hu_4",    "Kérjük a kedves utasokat, hogy a peron mellett fokozott "
+                     "óvatossággal közlekedjenek, és vigyázzanak a csomagjaikra.",
+                     "Female, Middle-aged, High Pitch"),
 ]
 
 
