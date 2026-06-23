@@ -33,7 +33,7 @@ def load_omnivoice_openvino(model_name: str = "k2-fsa/OmniVoice", ir_path_str: s
     
     return model, stats
 
-def generate_text_to_audio(model, stats, text: str, output_path: str, device: str = "GPU", instruct: str = None, language: str = "Hungarian"):
+def generate_text_to_audio(model, stats, text: str, output_path: str, device: str = "GPU", instruct: str = None, language: str = "Hungarian", ref_audio: str = None, ref_text: str = None):
     """Legenerál egyetlen szöveget a betöltött modellel, állítható nyelven."""
     logging.info(f"Audio generálása ({language}): {text[:50]}...")
     
@@ -45,6 +45,8 @@ def generate_text_to_audio(model, stats, text: str, output_path: str, device: st
         text=text,
         language=language,    
         instruct=instruct,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
         num_step=32,          
         guidance_scale=2.0    
     )
